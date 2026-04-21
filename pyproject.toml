@@ -1,26 +1,50 @@
-[tool.poetry]
+[project]
 name = "winsomnia-ssh"
-version = "0.1.1"
-description = """\
-              winsomnia-ssh prevents Windows from going to sleep \
-              while your ssh session is active in WSL. \
-              It also provides a simple CLI, `winsomnia`, \
-              which allows you to pause sleep whenever you want, \
-              for however long you want. \
-              """
-authors = ["Takaya Saeki <abc.tkys+pub@gmail.com>"]
+version = "0.2.0"
+description = "Prevent Windows from sleeping during a WSL SSH session, and a CLI to pause sleep on demand."
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [
+    { name = "Takaya Saeki", email = "abc.tkys+pub@gmail.com" },
+    { name = "Matt Wilkinson", email = "mattwilki17@gmail.com" },
+]
+dependencies = [
+    "psutil>=5.8",
+]
 
-[tool.poetry.dependencies]
-python = "^3.6"
-psutil = "^5.8.0"
-
-[tool.poetry.dev-dependencies]
-pytest = "^5.2"
-
-[tool.poetry.scripts]
+[project.scripts]
 winsomnia-ssh = "winsomnia_ssh.winsomnia_ssh:main"
 winsomnia = "winsomnia_ssh.winsomnia:main"
 
+[project.urls]
+Homepage = "https://github.com/nullpo-head/winsomnia-ssh"
+
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff",
+    "ty",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+
+[tool.ty.environment]
+python-version = "3.14"

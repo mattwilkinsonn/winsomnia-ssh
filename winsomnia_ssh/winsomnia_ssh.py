@@ -1,107 +1,148 @@
-#!/usr/bin/env python
+"""winsomnia-ssh: keep Windows from sleeping during a WSL SSH session.
+
+Invoke from a shell rc inside an SSH-into-WSL session. The process:
+  1. Verifies `python.exe` and `winsomnia` are reachable on PATH.
+  2. Walks the parent chain looking for sshd; exits cleanly if absent.
+  3. Double-forks to detach from the launching shell.
+  4. Periodically respawns `winsomnia` (which calls SetThreadExecutionState
+     on Windows) until the sshd ancestor exits.
+"""
+
+from __future__ import annotations
 
 import argparse
-import subprocess
-import psutil
-import sys
-import os
 import logging
+import os
+import shutil
+import subprocess
+import sys
 import time
-from typing import Optional
 
-__version__ = "0.1.1"
+import psutil
+
+__version__ = "0.2.0"
+
+# `winsomnia <minutes>` keeps Windows awake for that many minutes, then dies.
+# Respawn faster than the keep-awake window expires so there's always at
+# least one live winsomnia process pinning the system.
+KEEPAWAKE_MINUTES = 3
+TICK_SECONDS = 120  # 1-minute overlap with the previous spawn
 
 
-def main():
-    parser = argparse.ArgumentParser("winsomnia-ssh")
-    parser.add_argument("--version", action="version",
-                        version="%(prog)s {version}".format(version=__version__))
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Show verbose logging")
-    args = parser.parse_args()
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
+def main() -> None:
+    args = _parse_args()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
 
-    err = check_prerequisite()
-    if err:
-        logging.critical(err)
+    if msg := _check_prerequisites():
+        logging.critical(msg)
         sys.exit(1)
 
-    session = CurrentSshSession()
-    if not session.is_ssh_session():
-        logging.info("exiting because this is not a ssh session")
-        sys.exit(0)
+    sshd = _find_sshd_ancestor()
+    if sshd is None:
+        logging.info("not in an ssh session; exiting")
+        return
 
-    # daemonize here because the shell that launched this process in its "~/.*rc" is waiting
-    daemonize()
-    # TODO: log to file if necessary
-
-    logging.info("Detected winsomnia-ssh is running in a ssh session.")
-    while session.is_alive():
-        wait_completed_process_noblock()  # let zombie processes exit
-        # Allow two processes to run at the same time for a minute
-        # so that there is no time when there is not a single winsomnia process.
-        run_winsomnia_noblock(3)
-        time.sleep(120)
+    _detach()
+    _keep_awake_loop(sshd)
 
 
-def check_prerequisite() -> Optional[str]:
-    result = subprocess.run(["which", "python.exe"], capture_output=True)
-    path = result.stdout.strip()
-    if path == b"":
-        return "python.exe is not in PATH.\n" \
-               "Please Install Python for Windows via the official installer. " \
-               "DO NOT install python for Windows via Microsoft Store due to a technical problem."
-    result = subprocess.run(["which", "winsomnia"], capture_output=True)
-    if path == "":
-        return "winsomnia is not in PATH. Did you install winsomnia-ssh successfully?"
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser("winsomnia-ssh")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="show verbose logging"
+    )
+    return parser.parse_args()
+
+
+def _check_prerequisites() -> str | None:
+    python_exe = shutil.which("python.exe")
+    if python_exe is None:
+        return (
+            "python.exe is not in PATH.\n"
+            "Install Python for Windows via the official installer "
+            "(https://www.python.org/downloads/). "
+            "DO NOT use the Microsoft Store version - it cannot be launched from WSL."
+        )
+    if "WindowsApps" in python_exe:
+        return (
+            f"python.exe at {python_exe} is the Microsoft Store stub, "
+            "which cannot be launched from WSL. "
+            "Install Python via the official installer instead."
+        )
+    if shutil.which("winsomnia") is None:
+        return "winsomnia is not in PATH. Reinstall winsomnia-ssh."
     return None
 
 
-def daemonize():
-    sys.stdin.close()
-    sys.stderr.close()
-    sys.stdout.close()
-    sys.stdin = os.devnull
-    null = open(os.devnull, "rw")
-    sys.stdin = null
-    sys.stderr = null
-    sys.stdout = null
-    if os.fork() == 0:
-        return
-    else:
-        sys.exit(0)
+def _find_sshd_ancestor() -> psutil.Process | None:
+    for parent in psutil.Process().parents():
+        try:
+            if parent.name() == "sshd":
+                return parent
+        except psutil.NoSuchProcess:
+            continue
+    return None
 
 
-def run_winsomnia_noblock(timeout: int):
-    subprocess.Popen(["winsomnia", str(timeout), "-q"],
-                     stdin=subprocess.DEVNULL)
+def _detach() -> None:
+    """Double-fork into the background; redirect std streams to /dev/null.
+
+    Original parent returns from main() so the launching shell can continue.
+    The grandchild has no controlling terminal (via setsid) and its standard
+    streams point at /dev/null, so later writes don't EPIPE if the user's
+    terminal closes.
+    """
+    if os.fork() > 0:
+        os._exit(0)
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        os.dup2(devnull, stream.fileno())
+    os.close(devnull)
 
 
-def wait_completed_process_noblock():
+def _keep_awake_loop(sshd: psutil.Process) -> None:
+    logging.info(
+        "winsomnia-ssh detached; pinning host awake while sshd %d is alive", sshd.pid
+    )
     while True:
         try:
-            if os.waitpid(0, os.WNOHANG) == (0, 0):
-                break
+            if not sshd.is_running():
+                return
+        except psutil.NoSuchProcess:
+            return
+
+        _reap_zombies()
+        _spawn_winsomnia(KEEPAWAKE_MINUTES)
+        time.sleep(TICK_SECONDS)
+
+
+def _spawn_winsomnia(timeout_minutes: int) -> None:
+    subprocess.Popen(
+        ["winsomnia", str(timeout_minutes), "-q"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _reap_zombies() -> None:
+    while True:
+        try:
+            if os.waitpid(-1, os.WNOHANG) == (0, 0):
+                return
         except ChildProcessError:
-            # ignore no-child error
-            break
-
-
-class CurrentSshSession:
-    def __init__(self):
-        self.parents = psutil.Process().parents()
-        self._is_ssh_session = None
-
-    def is_ssh_session(self) -> bool:
-        if self._is_ssh_session:
-            return self._is_ssh_session
-        self._is_ssh_session = any(
-            filter(lambda p: p.name() == "sshd", self.parents))
-        return self._is_ssh_session
-
-    def is_alive(self) -> False:
-        return self.is_ssh_session() and self.parents[0].is_running()
+            return
 
 
 if __name__ == "__main__":
