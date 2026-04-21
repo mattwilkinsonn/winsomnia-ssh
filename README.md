@@ -3,15 +3,26 @@
 `winsomnia-ssh` prevents Windows from going to sleep while your ssh session is active in WSL.
 It also provides a simple CLI, `winsomnia`, which allows you to pause sleep whenever you want, for however long you want.
 
+> **Fork notice:** this is a maintained fork of [`nullpo-head/winsomnia-ssh`](https://github.com/nullpo-head/winsomnia-ssh).
+> Upstream's `daemonize()` was broken on Python 3 (used the invalid `"rw"` open mode and never reached `os.dup2` for fd-level redirects, so any post-detach log write would crash with a `ValueError`). This fork rewrites the daemonization with a proper double-fork + `setsid` + `dup2`, fixes a check-prerequisites typo that silently masked a missing `winsomnia` binary, actively rejects the Microsoft Store Python stub at runtime, and ports the project from Poetry to uv with ruff + ty.
+
 ## Installation
 
-Install `winsomnia-ssh` in WSL by `pip`.
+Requires Python 3.14+ in WSL and Python for Windows (official installer — see below).
+
+With [`uv`](https://docs.astral.sh/uv/) (recommended):
 
 ```sh
-pip install "git+https://github.com/nullpo-head/winsomnia-ssh"
+uv tool install "git+https://github.com/mattwilkinsonn/winsomnia-ssh"
 ```
 
-`winsomnia-ssh` requires `python` both in WSL2 and Windows. Please install Python for Windows via [the official installer](https://www.python.org/downloads/). Please DO NOT install Python via Microsoft store. It appears that the store app cannot be launched from WSL.
+Or with pip:
+
+```sh
+pip install "git+https://github.com/mattwilkinsonn/winsomnia-ssh"
+```
+
+`winsomnia-ssh` requires `python` both in WSL and Windows. Install Python for Windows via [the official installer](https://www.python.org/downloads/). **Do not** install Python via the Microsoft Store — the Store stub cannot be launched from WSL, and `winsomnia-ssh` will refuse to run if it detects this stub on PATH.
 
 If you install `winsomnia-ssh` in native Windows, `winsomnia` should work without problem.
 `winsomnia-ssh` may be able to work, but it's not tested or supported.
@@ -27,7 +38,7 @@ winsomnia-ssh
 ```
 
 As long as the shell session in WSL that launched `winsomnia-ssh` is active, it will prevent Windows from going to sleep.
-It does nothing when your session is not in a ssh session, so you can just add the line above to your `.bashrc`.
+It does nothing (and prints nothing) when your session is not in an ssh session, so it's safe to leave in `.bashrc` unconditionally. Pass `-v` if you want verbose logging while debugging.
 
 Please note that the detection of ssh sessions assumes that your `sshd` is `sshd` of Linux (WSL).
 For your reference, here is an example tutorial of how to set up an ssh server in WSL. [How to SSH into WSL2 on Windows 10 from an external machine - Scott Hanselman's Blog](https://www.hanselman.com/blog/how-to-ssh-into-wsl2-on-windows-10-from-an-external-machine).
@@ -52,3 +63,12 @@ Kill this program by Ctrl+C to let Windows sleep
 ```
 
 See `winsomnia --help` for the detailed usage.
+
+## Development
+
+```sh
+uv sync
+uv run pytest
+uv run ruff check .
+uv run ty check
+```

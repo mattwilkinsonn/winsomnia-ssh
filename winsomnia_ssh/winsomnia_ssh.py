@@ -31,7 +31,10 @@ TICK_SECONDS = 120  # 1-minute overlap with the previous spawn
 
 def main() -> None:
     args = _parse_args()
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
+    # Default Python logging only emits WARNING+, so info messages stay silent
+    # unless --verbose. Critical prereq failures always surface.
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
 
     if msg := _check_prerequisites():
         logging.critical(msg)
